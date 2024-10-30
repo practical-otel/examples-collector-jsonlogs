@@ -1,0 +1,16 @@
+version: "3.9"  
+services: 
+  aspire-dashboard:
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:8.1.0
+    environment:
+      - DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS=true 
+    ports:
+      - "18888:18888"
+
+  collector:
+    depends_on:
+      - aspire-dashboard
+    image: otel/opentelemetry-collector-contrib:latest
+    volumes:
+      - ./config.yaml:/etc/otelcol-contrib/config.yaml
+      - ./src/logs:/var/logs-ingest

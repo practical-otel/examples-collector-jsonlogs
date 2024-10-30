@@ -1,0 +1,96 @@
+receivers:
+  filelog/transform:
+    include:
+    - /var/logs-ingest/*.log
+    include_file_name: false
+    include_file_path: true
+    resource:
+      service.name: "json_from_transform"
+  filelog/json_parser:
+    include:
+    - /var/logs-ingest/*.log
+    include_file_name: false
+    include_file_path: true
+    resource:
+      service.name: "stanza_parser"
+    operators:
+    - type: json_parser
+      output: parse_hostport
+      if: body matches "^{.*}$"
+      timestamp:
+        parse_from: attributes.Timestamp
+        layout: '%Y-%m-%dT%H:%M:%S%j'
+      severity:
+        parse_from: attributes.Level
+        mapping: 
+          info: Information
+          warn: Warning
+    - type: regex_parser
+      id: parse_hostport
+      if: attributes.Properties.Host != nil
+      regex: '(?P<hostname>[^,]+):(?P<port>.*)$'
+      parse_from: attributes.Properties.Host
+  
+
+processors:
+  transform/collapse_map:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        conditions:
+          - IsMap(attributes["Properties"])
+        statements:
+          - flatten(attributes["Properties"], "")
+          - merge_maps(attributes, attributes["Properties"], "upsert")
+          - delete_key(attributes, "Properties")
+  transform/parse_json_body:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        conditions:
+          - body != nil and Substring(body, 0, 2) == "{\""
+        statements:
+            - set(cache, ParseJSON(body))
+            - flatten(cache, "")
+            - merge_maps(attributes, cache, "upsert")
+            - set(time, Time(attributes["Timestamp"], "%Y-%m-%dT%H:%M:%S%j"))
+
+            - set(severity_text, "TRACE") where attributes["Level"] == "Trace"
+            - set(severity_number, 1) where attributes["Level"] == "Trace"
+
+            - set(severity_text, "DEBUG") where attributes["Level"] == "Debug"
+            - set(severity_number, 5) where attributes["Level"] == "Debug"
+
+            - set(severity_text, "INFO") where attributes["Level"] == "Information"
+            - set(severity_number, 9) where attributes["Level"] == "Information"
+
+            - set(severity_text, "WARN") where attributes["Level"] == "Warning"
+            - set(severity_number, 13) where attributes["Level"] == "Warning"
+
+            - set(severity_text, "ERROR") where attributes["Level"] == "Error"
+            - set(severity_number, 17) where attributes["Level"] == "Error"
+
+            - set(severity_text, "FATAL") where attributes["Level"] == "Fatal"
+            - set(severity_number, 21) where attributes["Level"] == "Fatal"
+
+exporters:
+  debug:
+    verbosity: detailed
+  otlp:
+    endpoint: "aspire-dashboard:18889"
+    tls:
+        insecure: true
+
+service:
+  pipelines:
+    logs:
+      receivers: [filelog/transform]
+      processors:
+        - transform/parse_json_body
+      exporters: [otlp]
+
+    logs/stanza:
+      receivers: [filelog/json_parser]
+      processors:
+        - transform/collapse_map
+      exporters: [otlp, debug]
